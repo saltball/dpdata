@@ -1,9 +1,10 @@
 from io import FileIO
-from re import T
+
 import numpy as np
 
 try:
     from ase.units import Hartree, Bohr
+
     AU_TO_EV = Hartree
     Bh_TO_ANG = Bohr
 except ImportError:
@@ -76,11 +77,9 @@ class XTBXyzSystems:
             self.hessian_file_object.close()
 
 
-def get_grad_frame(
-        grad_file_obj):
-
+def get_grad_frame(grad_file_obj):
     # refer to ase.io.turbomole, change some logic
-    if isinstance(FileIO, grad_file_obj):
+    if isinstance(grad_file_obj, FileIO):
         grad_file_obj = open(grad_file_obj, "r")
     lines = [x.strip() for x in grad_file_obj.readlines()]
     start = end = -1
@@ -97,6 +96,14 @@ def get_grad_frame(
 
     del lines[:start + 1]
     del lines[end - 1 - start:]
+    info_dict = dict()
+    info_dict_atom_types = None
+    info_dict_coords = list()
+    info_dict_atom_names = None
+    info_dict_atom_numbs = None
+    info_dict_forces = list()
+    info_dict_energies = list()
+    info_dict_cells = list()
     while lines:  # loop over optimization cycles
         # header line
         # cycle =      {N}    SCF energy =     -{FLOAT}   |dE/dxyz| =  {FLOAT}
@@ -107,6 +114,9 @@ def get_grad_frame(
             # gradient = float(fields[3].split()[0])
         except (IndexError, ValueError) as e:
             raise e
+        force = []
+        coord = []
+        atom_symbols = []
         for line in lines[1:]:
             fields = line.split()
             if len(fields) == 4:  # coordinates
@@ -117,7 +127,9 @@ def get_grad_frame(
                     if symbol == 'Q':
                         symbol = 'X'
                     position = tuple([Bh_TO_ANG * float(x)
-                                     for x in fields[0:3]])
+                                      for x in fields[0:3]])
+                    coord.append(position)
+                    atom_symbols.append(symbol)
                 except ValueError as e:
                     raise e
             elif len(fields) == 3:  # gradients
@@ -131,16 +143,31 @@ def get_grad_frame(
                         )
                     except ValueError as e:
                         raise e
+                force.append(grad)
             else:  # yield and to next cycle
-                info_dict = dict()
-                atom_names, info_dict['atom_types'], atom_numbs = np.unique(
-                    symbol, return_inverse=True, return_counts=True)
-                info_dict['atom_names'] = list(atom_names)
-                info_dict['atom_numbs'] = list(atom_numbs)
-                info_dict['forces'] = np.array(grad)
-                info_dict['energies'] = np.array(energy)
-                info_dict['cells'] = np.array(
-                    [[[100., 0., 0.], [0., 100., 0.], [0., 0., 100.]]])
-
-                yield info_dict
                 break
+        atom_names, atom_types, atom_numbs = np.unique(
+            atom_symbols, return_inverse=True, return_counts=True)
+        if info_dict_atom_types:
+            assert np.allclose(info_dict_atom_types, atom_types)
+            assert np.allclose(info_dict_atom_names, atom_names)
+            assert np.allclose(info_dict_atom_numbs, atom_numbs)
+        else:
+            info_dict_atom_types = atom_types
+            info_dict_atom_names = list(atom_names)
+            info_dict_atom_numbs = list(atom_numbs)
+        info_dict_coords = np.array(coord)
+        info_dict_forces.append(np.array(force))
+        info_dict_energies.append(np.array(energy))
+        info_dict_cells.append(np.array(
+            [[100., 0., 0.], [0., 100., 0.], [0., 0., 100.]]))
+
+        del lines[:2 * len(force) + 1]
+    info_dict["atom_types"] = info_dict_atom_types
+    info_dict["coords"] = np.array((info_dict_coords,))
+    info_dict["atom_names"] = info_dict_atom_names
+    info_dict["atom_numbs"] = info_dict_atom_numbs
+    info_dict["forces"] = np.array(info_dict_forces,)
+    info_dict["energies"] = np.array(info_dict_energies,)
+    info_dict["cells"] = np.array(info_dict_cells,)
+    return info_dict
